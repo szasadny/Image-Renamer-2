@@ -8,8 +8,11 @@ import tkinter as tk
 from tkinter import filedialog, scrolledtext, ttk
 import threading
 import piexif
+from PIL import Image
 import exifread
 from datetime import datetime, timedelta
+import shutil
+import sys
 
 class ImageProcessor:
     def __init__(self, root_path, target_folder_name, log_callback=None):
@@ -184,6 +187,16 @@ class ImageProcessor:
         # Now rename to the final sequential names and update metadata
         new_codes = list(range(lowest_code, lowest_code + len(image_files)))
         
+        # Calculate all the dates first, making sure they are strictly ascending
+        date_increments = []
+        current_date = base_date
+        
+        for i in range(len(image_files)):
+            seconds_to_add = random.randint(30, 60)
+            date_increments.append(current_date)
+            current_date = current_date + timedelta(seconds=seconds_to_add)
+        
+        # Now apply the renames and date changes with the pre-calculated dates
         for i, (old_code, _) in enumerate(image_files):
             if self.stop_requested:
                 break
@@ -197,9 +210,8 @@ class ImageProcessor:
             new_filename = f"IMG_{new_code:04d}.JPG"
             new_path = os.path.join(folder_path, new_filename)
             
-            # Calculate the new date (base date + random seconds)
-            seconds_to_add = random.randint(30, 60) * i
-            new_date = base_date + timedelta(seconds=seconds_to_add)
+            # Get the pre-calculated date for this image
+            new_date = date_increments[i]
             
             try:
                 # Rename the file
