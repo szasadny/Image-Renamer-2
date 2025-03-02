@@ -8,11 +8,8 @@ import tkinter as tk
 from tkinter import filedialog, scrolledtext, ttk
 import threading
 import piexif
-from PIL import Image
 import exifread
 from datetime import datetime, timedelta
-import shutil
-import sys
 
 class ImageProcessor:
     def __init__(self, root_path, target_folder_name, log_callback=None):
