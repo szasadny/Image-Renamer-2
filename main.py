@@ -5,7 +5,7 @@ import random
 import datetime
 import logging
 import tkinter as tk
-from tkinter import filedialog, scrolledtext, ttk
+from tkinter import filedialog, scrolledtext, ttk, messagebox
 import threading
 import piexif
 import exifread
@@ -79,9 +79,14 @@ class ImageProcessor:
             return int(match.group(1))
         return None
     
+    def is_jpg_file(self, filename):
+        """Check if the file is a JPG image."""
+        return filename.lower().endswith(('.jpg', '.jpeg'))
+    
     def get_image_files(self, folder_path):
-        """Get all IMG_XXXX.JPG files from a folder and sort them by code."""
-        image_files = []
+        """Get all JPG files from a folder, identifying IMG_XXXX.JPG and other JPGs."""
+        standard_images = []  # IMG_XXXX.JPG format
+        other_images = []     # Other JPG files
         
         for filename in os.listdir(folder_path):
             if self.stop_requested:
@@ -90,11 +95,13 @@ class ImageProcessor:
             if re.match(r'IMG_\d+\.JPG', filename, re.IGNORECASE):
                 code = self.extract_code_from_filename(filename)
                 if code is not None:
-                    image_files.append((code, filename))
+                    standard_images.append((code, filename))
+            elif self.is_jpg_file(filename):
+                other_images.append(filename)
         
-        # Sort by the numeric code
-        image_files.sort(key=lambda x: x[0])
-        return image_files
+        # Sort standard images by the numeric code
+        standard_images.sort(key=lambda x: x[0])
+        return standard_images, other_images
     
     def get_exif_creation_date(self, image_path):
         """Extract the creation date from EXIF data."""
@@ -145,65 +152,107 @@ class ImageProcessor:
         """Process a single target folder."""
         self.log(f"Processing folder: {folder_path}")
         
-        # Get all image files sorted by code
-        image_files = self.get_image_files(folder_path)
-        if not image_files:
-            self.log(f"No IMG_*.JPG files found in {folder_path}")
+        # Get all image files, separating standard IMG_XXXX.JPG and other JPGs
+        standard_images, other_images = self.get_image_files(folder_path)
+        
+        total_images = len(standard_images) + len(other_images)
+        if total_images == 0:
+            self.log(f"No JPG files found in {folder_path}")
             return
         
-        self.log(f"Found {len(image_files)} image files")
+        self.log(f"Found {len(standard_images)} IMG_XXXX.JPG files and {len(other_images)} other JPG files")
         
-        # Get the base date from the first image
-        lowest_code = image_files[0][0]
-        lowest_code_file = os.path.join(folder_path, image_files[0][1])
+        # Determine the starting code for renaming
+        if standard_images:
+            # If we have IMG_XXXX.JPG files, use the lowest existing code
+            lowest_code = standard_images[0][0]
+            self.log(f"Using existing lowest code: {lowest_code}")
+            # Get base date from the first standard image
+            lowest_code_file = os.path.join(folder_path, standard_images[0][1])
+            base_date = self.get_exif_creation_date(lowest_code_file)
+        else:
+            # If no standard images, generate a random starting code between 1000 and 2000
+            lowest_code = random.randint(1000, 2000)
+            self.log(f"No IMG_XXXX.JPG files found, using random starting code: {lowest_code}")
+            base_date = None
+            
+            # Try to get a base date from the first other JPG
+            if other_images:
+                first_other_file = os.path.join(folder_path, other_images[0])
+                base_date = self.get_exif_creation_date(first_other_file)
         
-        base_date = self.get_exif_creation_date(lowest_code_file)
         if not base_date:
-            self.log(f"Could not read creation date from {lowest_code_file}, using current time", logging.WARNING)
+            self.log(f"Could not read creation date, using current time", logging.WARNING)
             base_date = datetime.now()
         
         self.log(f"Base date for metadata: {base_date}")
         
         # First, rename all files to temporary names to avoid conflicts
         temp_mappings = {}
-        for code, filename in image_files:
+        
+        # Handle standard images first
+        for code, filename in standard_images:
             if self.stop_requested:
                 break
                 
             original_path = os.path.join(folder_path, filename)
-            temp_filename = f"TEMP_{code}.JPG"
+            temp_filename = f"TEMP_STD_{code}.JPG"
             temp_path = os.path.join(folder_path, temp_filename)
             
             try:
                 os.rename(original_path, temp_path)
-                temp_mappings[code] = temp_filename
+                temp_mappings[filename] = temp_filename
                 self.log(f"Renamed {filename} to {temp_filename}")
             except Exception as e:
                 self.log(f"Error renaming {filename} to temporary name: {str(e)}", logging.ERROR)
         
-        # Now rename to the final sequential names and update metadata
-        new_codes = list(range(lowest_code, lowest_code + len(image_files)))
+        # Now handle other JPG files
+        for i, filename in enumerate(other_images):
+            if self.stop_requested:
+                break
+                
+            original_path = os.path.join(folder_path, filename)
+            temp_filename = f"TEMP_OTHER_{i}.JPG"
+            temp_path = os.path.join(folder_path, temp_filename)
+            
+            try:
+                os.rename(original_path, temp_path)
+                temp_mappings[filename] = temp_filename
+                self.log(f"Renamed {filename} to {temp_filename}")
+            except Exception as e:
+                self.log(f"Error renaming {filename} to temporary name: {str(e)}", logging.ERROR)
         
         # Calculate all the dates first, making sure they are strictly ascending
         date_increments = []
         current_date = base_date
         
-        for i in range(len(image_files)):
+        for i in range(total_images):
             seconds_to_add = random.randint(30, 60)
             date_increments.append(current_date)
             current_date = current_date + timedelta(seconds=seconds_to_add)
         
-        # Now apply the renames and date changes with the pre-calculated dates
-        for i, (old_code, _) in enumerate(image_files):
+        # Now rename all files to the final sequential names
+        all_temp_files = []
+        
+        # First add standard images
+        for code, original_filename in standard_images:
+            temp_filename = temp_mappings.get(original_filename)
+            if temp_filename:
+                all_temp_files.append((temp_filename, original_filename))
+        
+        # Then add other JPG files
+        for original_filename in other_images:
+            temp_filename = temp_mappings.get(original_filename)
+            if temp_filename:
+                all_temp_files.append((temp_filename, original_filename))
+        
+        # Now rename everything to the new sequence
+        for i, (temp_filename, original_filename) in enumerate(all_temp_files):
             if self.stop_requested:
                 break
                 
-            temp_filename = temp_mappings.get(old_code)
-            if not temp_filename:
-                continue
-                
             temp_path = os.path.join(folder_path, temp_filename)
-            new_code = new_codes[i]
+            new_code = lowest_code + i
             new_filename = f"IMG_{new_code:04d}.JPG"
             new_path = os.path.join(folder_path, new_filename)
             
@@ -213,7 +262,7 @@ class ImageProcessor:
             try:
                 # Rename the file
                 os.rename(temp_path, new_path)
-                self.log(f"Renamed {temp_filename} to {new_filename}")
+                self.log(f"Renamed {temp_filename} (originally {original_filename}) to {new_filename}")
                 
                 # Update metadata
                 if self.set_image_metadata(new_path, new_date):
@@ -323,11 +372,11 @@ class ImageProcessorGUI:
         target_folder = self.target_folder_var.get()
         
         if not root_path or not target_folder:
-            tk.messagebox.showerror("Error", "Please provide both root path and target folder name")
+            messagebox.showerror("Error", "Please provide both root path and target folder name")
             return
         
         if not os.path.isdir(root_path):
-            tk.messagebox.showerror("Error", f"The root path '{root_path}' is not a valid directory")
+            messagebox.showerror("Error", f"The root path '{root_path}' is not a valid directory")
             return
         
         # Disable start button and enable stop button
@@ -353,7 +402,7 @@ class ImageProcessorGUI:
                 self.start_button.config(state=tk.NORMAL)
                 self.stop_button.config(state=tk.DISABLED)
                 self.status_var.set(f"Completed - Processed {folders_processed} folders")
-                tk.messagebox.showinfo("Processing Complete", f"Successfully processed {folders_processed} folders.")
+                messagebox.showinfo("Processing Complete", f"Successfully processed {folders_processed} folders.")
             
             self.root.after(0, on_complete)
         except Exception as e:
@@ -362,7 +411,7 @@ class ImageProcessorGUI:
                 self.stop_button.config(state=tk.DISABLED)
                 self.status_var.set("Error occurred")
                 self.update_log(f"ERROR: {str(e)}")
-                tk.messagebox.showerror("Error", f"An error occurred: {str(e)}")
+                messagebox.showerror("Error", f"An error occurred: {str(e)}")
             
             self.root.after(0, on_error)
     
