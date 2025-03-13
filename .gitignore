@@ -2,3 +2,4 @@ image_processor.log
 *.spec
 build/
 dist/
+*__pycache__
